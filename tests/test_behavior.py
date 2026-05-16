@@ -471,13 +471,13 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(result["weather_context"].departure.query, "Philadelphia International")
         self.assertIn("Departure weather", result["enrichment_summary"])
 
-    def test_recommendation_upgrades_memorize_to_reply_for_key_moment(self) -> None:
+    def test_recommendation_runs_for_repeat_pattern_skill_on_property_update(self) -> None:
         class FakeRecommender:
             def recommend(self, **_kwargs):
                 return SimpleNamespace(
                     should_reply=True,
-                    reason="Arrival is a key service moment.",
-                    reply_text="Ray is arriving tonight. Ask how the weather was in Philadelphia and offer his usual bourbon if available.",
+                    reason="Recurring pattern on property.",
+                    reply_text="Ray is on property and often wants a recovery snack after a run. Offer bottled water and a light snack.",
                 )
 
         nodes = GraphNodes(
@@ -521,7 +521,7 @@ class BehaviorTests(unittest.TestCase):
             {
                 "action": "memorize",
                 "event": ChatEvent(
-                    text="Ray is arriving tonight on AA2797",
+                    text="Ray went for a run and mentioned his goal is a mile",
                     source="teams",
                     surface="channel",
                     is_mentioned=False,
@@ -533,13 +533,13 @@ class BehaviorTests(unittest.TestCase):
                 "operational_update": OperationalUpdate(
                     is_guest_related=True,
                     guest_name_candidates=["Ray"],
-                    event_kind="Arrival Update",
-                    summary="Ray is arriving tonight.",
-                    details="Flight AA2797 is on the way.",
-                    stay_phase="arrival",
-                    key_moment_hint="arrival",
+                    event_kind="activity",
+                    summary="Ray went for a run.",
+                    details="He mentioned that his goal is a mile.",
+                    stay_phase="on_property",
                 ),
                 "guest_profile": profile,
+                "selected_skill_names": ["repeat_pattern_recommendations"],
                 "weather_context": WeatherContext(
                     departure=WeatherLocationSummary(query="Philadelphia", resolved_name="Philadelphia", current_temperature_c="18", current_weather="clear"),
                     arrival=WeatherLocationSummary(query="San Francisco", resolved_name="San Francisco", current_temperature_c="14", current_weather="foggy"),
@@ -548,8 +548,8 @@ class BehaviorTests(unittest.TestCase):
         )
 
         self.assertEqual(result["action"], "reply")
-        self.assertIn("Philadelphia", result["reply_content"])
-        self.assertIn("bourbon", result["reply_content"])
+        self.assertIn("recovery snack", result["reply_content"])
+        self.assertIn("bottled water", result["reply_content"])
 
     def test_agent_returns_all_actions_from_graph(self) -> None:
         class FakeGraph:

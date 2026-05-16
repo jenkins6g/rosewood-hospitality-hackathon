@@ -10,6 +10,8 @@ Route by the guest's current stay phase, not by stale earlier context.
 - If the latest message says the guest is checked in, in a room, on property, using hotel amenities, ordering on site, exercising on property, or otherwise clearly past arrival, prefer stay-phase and guest-tracking skills instead of arrival recommendation skills.
 - Treat older arrival notes or prior assistant suggestions as lower priority than the latest stay-phase signal.
 - When the latest update is a normal on-property activity, plan to log/update context unless a phase-appropriate service action is genuinely current.
+- For on-property activity with useful guest history, include `repeat_pattern_recommendations` and `travel_weather_context` when they can produce a current-stay suggestion.
+- For an on-property update that still looks like a guest-service moment, load the smallest recommendation skill set that can use profile notes or timeline history without reopening the arrival flow.
 
 Return:
 - selected skill names

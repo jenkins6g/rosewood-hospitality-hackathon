@@ -17,6 +17,14 @@ from src.app.tools.flight_status import FLIGHT_LINK_RE, format_flight_snapshot, 
 from src.app.tools.weather_lookup import WeatherLocationSummary, format_weather_summary, get_cached_weather_result
 
 
+RECOMMENDATION_SKILLS = {
+    "arrival_service_recommendations",
+    "departure_service_recommendations",
+    "repeat_pattern_recommendations",
+    "travel_weather_context",
+}
+
+
 def _stringify_content(content) -> str:
     if isinstance(content, str):
         return content
@@ -94,13 +102,6 @@ class GraphNodes:
         for event in profile.timeline[-6:]:
             lines.append(f"- {event.timestamp} | {event.event_kind} | {event.summary}")
         return "\n".join(lines)
-
-    def _is_key_moment(self, update: OperationalUpdate | None) -> bool:
-        if update is None:
-            return False
-        if update.key_moment_hint.strip():
-            return True
-        return update.stay_phase.strip().lower() in {"arrival", "departure"}
 
     def resolve(self, state: AgentState) -> AgentState:
         decision: ResolverDecision = self.resolver.resolve_with_context(
@@ -288,10 +289,11 @@ class GraphNodes:
     def recommend_guest_moment(self, state: AgentState) -> AgentState:
         update = state.get("operational_update")
         profile = state.get("guest_profile")
+        selected_skill_names = set(state.get("selected_skill_names", []))
 
         if state.get("action") == "reply":
             return {}
-        if update is None or profile is None or not self._is_key_moment(update):
+        if update is None or profile is None or not (selected_skill_names & RECOMMENDATION_SKILLS):
             return {}
 
         decision: RecommendationDecision = self.recommender.recommend(

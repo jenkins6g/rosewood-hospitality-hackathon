@@ -61,12 +61,18 @@ class ArchitectureTests(unittest.TestCase):
         summarizer_text = (ROOT / "src" / "app" / "prompts" / "summarizer.md").read_text(encoding="utf-8")
         self.assertIn("stay phase", resolver_text)
         self.assertIn("checked in", resolver_text)
+        self.assertIn("repeat_pattern_recommendations", resolver_text)
         self.assertIn("assistant's own proactive recommendations", summarizer_text)
 
     def test_stay_phase_guardrail_skill_exists(self) -> None:
         skill_text = (ROOT / "src" / "app" / "skills" / "stay_phase_recommendation_guardrails.md").read_text(encoding="utf-8")
         self.assertIn("stay_phase_recommendation_guardrails", skill_text)
         self.assertIn("prior assistant suggestions are not guest facts", skill_text)
+
+    def test_repeat_pattern_skill_mentions_current_stay_usage(self) -> None:
+        skill_text = (ROOT / "src" / "app" / "skills" / "repeat_pattern_recommendations.md").read_text(encoding="utf-8")
+        self.assertIn("on-property activity", skill_text)
+        self.assertIn("current stay", skill_text)
 
 
 if __name__ == "__main__":
