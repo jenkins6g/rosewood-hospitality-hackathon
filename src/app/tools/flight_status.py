@@ -10,7 +10,39 @@ from src.app.config import Settings
 from src.app.schemas import FlightSnapshot
 
 
-FLIGHT_REF_RE = re.compile(r"\b([A-Z0-9]{2,3})[- ]?(\d{1,4})\b", re.IGNORECASE)
+FLIGHT_REF_RE = re.compile(r"\b([A-Z]{2,3})[- ]?(\d{1,4})\b", re.IGNORECASE)
+FLIGHT_REF_EXACT_RE = re.compile(r"^\s*([A-Z]{2,3})[- ]?(\d{1,4})\s*$", re.IGNORECASE)
+FLIGHT_REF_WITH_CONTEXT_RE = re.compile(
+    r"\bflight\b[^A-Z0-9]{0,12}([A-Z]{2,3})[- ]?(\d{1,4})\b"
+    r"|\b([A-Z]{2,3})[- ]?(\d{1,4})\b(?=[^A-Z0-9]{0,12}\bflight\b)",
+    re.IGNORECASE,
+)
+FLIGHT_LINK_RE = re.compile(r"https?://\S*(flight|airline|aviation)\S*", re.IGNORECASE)
+COMMON_NON_FLIGHT_PREFIXES = {
+    "AM",
+    "AN",
+    "AS",
+    "AT",
+    "BY",
+    "DO",
+    "GO",
+    "HE",
+    "IF",
+    "IN",
+    "IS",
+    "IT",
+    "ME",
+    "MY",
+    "NO",
+    "OF",
+    "ON",
+    "OR",
+    "SO",
+    "TO",
+    "UP",
+    "US",
+    "WE",
+}
 
 
 @dataclass(frozen=True)
@@ -20,10 +52,30 @@ class FlightStatusResult:
 
 
 def normalize_flight_reference(value: str) -> str:
-    match = FLIGHT_REF_RE.search(value.upper())
+    match = FLIGHT_REF_EXACT_RE.match(value.upper())
     if not match:
         return ""
     return f"{match.group(1)}{match.group(2)}"
+
+
+def parse_flight_reference_from_text(value: str) -> str:
+    upper_value = value.upper()
+
+    context_match = FLIGHT_REF_WITH_CONTEXT_RE.search(upper_value)
+    if context_match:
+        prefix = context_match.group(1) or context_match.group(3)
+        number = context_match.group(2) or context_match.group(4)
+        if prefix and number:
+            return f"{prefix}{number}"
+
+    for match in FLIGHT_REF_RE.finditer(upper_value):
+        prefix = match.group(1)
+        number = match.group(2)
+        if prefix in COMMON_NON_FLIGHT_PREFIXES:
+            continue
+        return f"{prefix}{number}"
+
+    return ""
 
 
 def snapshot_from_api_record(record: dict) -> FlightSnapshot:

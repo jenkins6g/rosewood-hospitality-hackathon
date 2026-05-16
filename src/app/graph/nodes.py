@@ -8,11 +8,13 @@ from src.app.config import Settings
 from src.app.extractor import OperationalExtractor
 from src.app.guests.matcher import GuestMatcher
 from src.app.guests.store import GuestProfileStore
+from src.app.recommender import RecommendationEngine, RecommendationDecision
 from src.app.resolver.context_builder import build_context_bundle
 from src.app.resolver.router import ResolverDecision, SkillResolver
-from src.app.schemas import FlightSnapshot, GuestEvent, GuestMatchDecision, GuestProfile, MemoryNote, OperationalUpdate, Skill
+from src.app.schemas import FlightSnapshot, GuestEvent, GuestMatchDecision, GuestProfile, MemoryNote, OperationalUpdate, Skill, WeatherContext
 from src.app.state import AgentState
-from src.app.tools.flight_status import get_cached_flight_status_result, normalize_flight_reference
+from src.app.tools.flight_status import FLIGHT_LINK_RE, format_flight_snapshot, get_cached_flight_status_result, normalize_flight_reference, parse_flight_reference_from_text
+from src.app.tools.weather_lookup import WeatherLocationSummary, format_weather_summary, get_cached_weather_result
 
 
 def _stringify_content(content) -> str:
@@ -34,6 +36,7 @@ class GraphNodes:
     extractor: OperationalExtractor
     guest_matcher: GuestMatcher
     guest_store: GuestProfileStore
+    recommender: RecommendationEngine
     resolver: SkillResolver
     registry: object
     compressor: object
@@ -73,6 +76,31 @@ class GraphNodes:
             lines.append("latest_flight:")
             lines.append(format_flight_snapshot(profile.latest_flight))
         return "\n".join(lines)
+
+    def _format_weather_context(self, weather_context: WeatherContext | None) -> str:
+        if weather_context is None:
+            return ""
+        sections: list[str] = []
+        if weather_context.departure is not None:
+            sections.append("Departure weather:\n" + format_weather_summary(weather_context.departure))
+        if weather_context.arrival is not None:
+            sections.append("Arrival weather:\n" + format_weather_summary(weather_context.arrival))
+        return "\n\n".join(sections)
+
+    def _format_recent_timeline(self, profile: GuestProfile | None) -> str:
+        if profile is None or not profile.timeline:
+            return ""
+        lines = []
+        for event in profile.timeline[-6:]:
+            lines.append(f"- {event.timestamp} | {event.event_kind} | {event.summary}")
+        return "\n".join(lines)
+
+    def _is_key_moment(self, update: OperationalUpdate | None) -> bool:
+        if update is None:
+            return False
+        if update.key_moment_hint.strip():
+            return True
+        return update.stay_phase.strip().lower() in {"arrival", "departure"}
 
     def resolve(self, state: AgentState) -> AgentState:
         decision: ResolverDecision = self.resolver.resolve_with_context(
@@ -122,13 +150,31 @@ class GraphNodes:
             context_bundle=state.get("context_bundle", ""),
         )
         if not update.flight_reference:
-            normalized = normalize_flight_reference(state["user_input"])
+            normalized = parse_flight_reference_from_text(state["user_input"])
             if normalized:
                 update = OperationalUpdate(
                     **{
                         **update.__dict__,
                         "flight_reference": normalized,
-                        "needs_arrival_lookup": update.needs_arrival_lookup or update.event_kind == "flight",
+                        "needs_arrival_lookup": True,
+                    }
+                )
+        elif not normalize_flight_reference(update.flight_reference):
+            update = OperationalUpdate(
+                **{
+                    **update.__dict__,
+                    "flight_reference": "",
+                    "needs_arrival_lookup": False,
+                }
+            )
+        elif not update.needs_arrival_lookup:
+            link_present = bool(update.flight_link and FLIGHT_LINK_RE.search(update.flight_link))
+            explicit_flight_text = "flight" in state["user_input"].lower()
+            if link_present or explicit_flight_text or update.event_kind.lower() == "flight":
+                update = OperationalUpdate(
+                    **{
+                        **update.__dict__,
+                        "needs_arrival_lookup": True,
                     }
                 )
         return {"operational_update": update}
@@ -200,6 +246,79 @@ class GraphNodes:
             "enrichment_summary": lookup_result.text,
         }
 
+    def enrich_weather_context(self, state: AgentState) -> AgentState:
+        flight_snapshot: FlightSnapshot | None = state.get("flight_snapshot")
+        tool_trace = list(state.get("tool_trace", []))
+        if flight_snapshot is None:
+            return {"tool_trace": tool_trace}
+
+        weather_tool = self.tools_by_name["weather_lookup"]
+        weather_context = WeatherContext()
+
+        def fetch(location: str) -> WeatherLocationSummary | None:
+            if not location.strip():
+                return None
+            result = get_cached_weather_result(
+                location.strip(),
+                self.settings.weather_forecast_days,
+                self.settings.http_timeout_seconds,
+            )
+            tool_output = weather_tool.invoke({"location": location})
+            tool_trace.append(f"weather_lookup({location}) -> {tool_output}")
+            return result.summary
+
+        try:
+            departure = fetch(flight_snapshot.departure_airport)
+            arrival = fetch(flight_snapshot.arrival_airport)
+        except Exception as exc:
+            tool_trace.append(f"weather_lookup -> ERROR: {exc}")
+            return {"tool_trace": tool_trace}
+
+        weather_context = WeatherContext(departure=departure, arrival=arrival)
+        sections = [state.get("enrichment_summary", "").strip()]
+        formatted_weather = self._format_weather_context(weather_context)
+        if formatted_weather:
+            sections.append(formatted_weather)
+        return {
+            "tool_trace": tool_trace,
+            "weather_context": weather_context,
+            "enrichment_summary": "\n\n".join(section for section in sections if section),
+        }
+
+    def recommend_guest_moment(self, state: AgentState) -> AgentState:
+        update = state.get("operational_update")
+        profile = state.get("guest_profile")
+
+        if state.get("action") == "reply":
+            return {}
+        if update is None or profile is None or not self._is_key_moment(update):
+            return {}
+
+        decision: RecommendationDecision = self.recommender.recommend(
+            event_context=self._format_event_context(state),
+            context_bundle=state.get("context_bundle", ""),
+            guest_profile=self._format_guest_profile(profile),
+            operational_update="\n".join(
+                [
+                    f"event_kind: {update.event_kind}",
+                    f"summary: {update.summary}",
+                    f"details: {update.details}",
+                ]
+            ),
+            weather_context=self._format_weather_context(state.get("weather_context")),
+            recent_timeline=self._format_recent_timeline(profile),
+        )
+        if not decision.should_reply or not decision.reply_text.strip():
+            return {"recommendation_reason": decision.reason}
+
+        return {
+            "action": "reply",
+            "final_response": decision.reply_text.strip(),
+            "reply_content": decision.reply_text.strip(),
+            "recommendation_reason": decision.reason,
+            "action_reason": decision.reason or state.get("action_reason", ""),
+        }
+
     def agent(self, state: AgentState) -> AgentState:
         if state.get("clarification_question"):
             return {
@@ -268,6 +387,7 @@ class GraphNodes:
         guest_profile: GuestProfile | None = state.get("guest_profile")
         guest_match: GuestMatchDecision | None = state.get("guest_match")
         flight_snapshot: FlightSnapshot | None = state.get("flight_snapshot")
+        weather_context: WeatherContext | None = state.get("weather_context")
 
         memory_note = None
         candidate = state.get("memory_candidate", "").strip()
@@ -312,8 +432,10 @@ class GraphNodes:
                 summary=update.summary,
                 details=update.details or update.summary,
                 raw_text=event.text,
+                stay_phase=update.stay_phase,
                 confidence_note=(guest_match.reasoning if guest_match else ""),
                 flight_snapshot=flight_snapshot,
+                weather_context=weather_context,
             )
             updated_profile = self.guest_store.append_event(
                 guest_profile,

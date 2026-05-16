@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -8,18 +9,59 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.adapters.teams import TeamsAdapter, normalize_teams_activity
-from src.app.agent import ReactSkillAgent
+from src.app.agent import ReactSkillAgent, build_chat_model
 from src.app.config import Settings
 from src.app.graph.nodes import GraphNodes
 from src.app.guests.store import GuestProfileStore
 from src.app.memory.note_store import MemoryNoteStore
 from src.app.memory.session import SessionMemory
 from src.app.memory.session_store import SessionStore
-from src.app.schemas import ChatEvent, FlightSnapshot, GuestEvent, GuestProfile, MemoryNote, OperationalUpdate, TurnResult
+from src.app.schemas import ChatEvent, FlightSnapshot, GuestEvent, GuestProfile, MemoryNote, OperationalUpdate, TurnResult, WeatherContext, WeatherLocationSummary
 from src.app.tracing import build_runnable_config, format_tracing_status
+from src.app.tools.flight_status import parse_flight_reference_from_text
 
 
 class BehaviorTests(unittest.TestCase):
+    def test_build_chat_model_selects_openai_provider(self) -> None:
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.dict(sys.modules, {"langchain_openai": SimpleNamespace(ChatOpenAI=FakeChatOpenAI)}):
+            model = build_chat_model(
+                Settings(model_provider="openai", openai_model="gpt-4o-mini", temperature=0.25)
+            )
+
+        self.assertIsInstance(model, FakeChatOpenAI)
+        self.assertEqual(captured["model"], "gpt-4o-mini")
+        self.assertEqual(captured["temperature"], 0.25)
+
+    def test_build_chat_model_selects_anthropic_provider(self) -> None:
+        captured = {}
+
+        class FakeChatAnthropic:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.dict(sys.modules, {"langchain_anthropic": SimpleNamespace(ChatAnthropic=FakeChatAnthropic)}):
+            model = build_chat_model(
+                Settings(
+                    model_provider="anthropic",
+                    anthropic_model="claude-3-5-sonnet-latest",
+                    temperature=0.15,
+                )
+            )
+
+        self.assertIsInstance(model, FakeChatAnthropic)
+        self.assertEqual(captured["model"], "claude-3-5-sonnet-latest")
+        self.assertEqual(captured["temperature"], 0.15)
+
+    def test_build_chat_model_rejects_unknown_provider(self) -> None:
+        with self.assertRaises(ValueError):
+            build_chat_model(Settings(model_provider="bogus"))
+
     def test_session_memory_ignores_ignore_action(self) -> None:
         session = SessionMemory()
         event = ChatEvent(
@@ -128,6 +170,7 @@ class BehaviorTests(unittest.TestCase):
                 summary="Sarah Lee is arriving on DL234.",
                 details="Airport pickup requested.",
                 raw_text="Sarah Lee is arriving on DL234. Airport pickup requested.",
+                stay_phase="arrival",
                 flight_snapshot=snapshot,
             )
 
@@ -136,6 +179,115 @@ class BehaviorTests(unittest.TestCase):
             self.assertEqual(updated.status, "arriving")
             self.assertEqual(updated.latest_flight.flight_reference, "DL234")
             self.assertEqual(updated.timeline[-1].event_kind, "flight")
+
+    def test_guest_profile_store_round_trips_weather_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = GuestProfileStore(Path(tmpdir))
+            profile = GuestProfile(guest_id="ray-1", canonical_name="Ray")
+            store.save(profile)
+            guest_event = GuestEvent(
+                timestamp=datetime.now(UTC).isoformat(),
+                source="teams",
+                surface="channel",
+                sender_id="u1",
+                sender_name="Staff",
+                conversation_id="c1",
+                channel_id="ch1",
+                team_id="t1",
+                message_id="m1",
+                event_kind="Arrival Update",
+                summary="Ray is arriving tonight.",
+                details="Weather-aware arrival prep suggested.",
+                raw_text="Ray is arriving tonight.",
+                stay_phase="arrival",
+                weather_context=WeatherContext(
+                    departure=WeatherLocationSummary(query="Philadelphia", resolved_name="Philadelphia, Pennsylvania, United States"),
+                    arrival=WeatherLocationSummary(query="San Francisco", resolved_name="San Francisco, California, United States"),
+                ),
+            )
+            store.append_event(profile, guest_event)
+
+            loaded = store.get("ray-1")
+
+            assert loaded is not None
+            self.assertEqual(loaded.status, "arriving")
+            self.assertEqual(loaded.timeline[-1].weather_context.arrival.resolved_name, "San Francisco, California, United States")
+
+    def test_guest_profile_store_marks_checked_in_guest_as_on_property(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = GuestProfileStore(Path(tmpdir))
+            profile = GuestProfile(guest_id="frank-1", canonical_name="Frank Espaillat")
+            store.save(profile)
+
+            arrival_event = GuestEvent(
+                timestamp=datetime.now(UTC).isoformat(),
+                source="teams",
+                surface="channel",
+                sender_id="u1",
+                sender_name="Staff",
+                conversation_id="c1",
+                channel_id="ch1",
+                team_id="t1",
+                message_id="m1",
+                event_kind="Arrival Update",
+                summary="Frank is arriving tonight.",
+                details="Expected around 11 PM.",
+                raw_text="Frank is arriving tonight.",
+                stay_phase="arrival",
+            )
+            checked_in_event = GuestEvent(
+                timestamp=datetime.now(UTC).isoformat(),
+                source="teams",
+                surface="channel",
+                sender_id="u1",
+                sender_name="Staff",
+                conversation_id="c1",
+                channel_id="ch1",
+                team_id="t1",
+                message_id="m2",
+                event_kind="Arrival Update",
+                summary="Frank is checked into room 205.",
+                details="He requested it for the pool view.",
+                raw_text="Frank just arrived and he is checked into room 205.",
+                stay_phase="on_property",
+            )
+
+            after_arrival = store.append_event(profile, arrival_event)
+            after_check_in = store.append_event(after_arrival, checked_in_event)
+
+            self.assertEqual(after_arrival.status, "arriving")
+            self.assertEqual(after_check_in.status, "on_property")
+
+    def test_guest_profile_store_keeps_on_property_for_mid_stay_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = GuestProfileStore(Path(tmpdir))
+            profile = GuestProfile(
+                guest_id="frank-1",
+                canonical_name="Frank Espaillat",
+                status="on_property",
+            )
+            store.save(profile)
+
+            run_event = GuestEvent(
+                timestamp=datetime.now(UTC).isoformat(),
+                source="teams",
+                surface="channel",
+                sender_id="u1",
+                sender_name="Staff",
+                conversation_id="c1",
+                channel_id="ch1",
+                team_id="t1",
+                message_id="m3",
+                event_kind="activity",
+                summary="Frank went for a run.",
+                details="He mentioned that his goal is a mile.",
+                raw_text="Frank went for a run, he mentioned that his goal is a mile.",
+                stay_phase="on_property",
+            )
+
+            updated = store.append_event(profile, run_event)
+
+            self.assertEqual(updated.status, "on_property")
 
     def test_enrichment_invokes_flight_status_tool(self) -> None:
         class FakeTool:
@@ -154,12 +306,13 @@ class BehaviorTests(unittest.TestCase):
             extractor=None,
             guest_matcher=None,
             guest_store=GuestProfileStore(Path("/tmp/unused")),
+            recommender=None,
             resolver=None,
             registry=None,
             compressor=None,
             harness_prompt="",
             max_tool_rounds=3,
-            tools_by_name={"flight_status": fake_tool},
+            tools_by_name={"flight_status": fake_tool, "weather_lookup": fake_tool},
         )
         with patch("src.app.graph.nodes.get_cached_flight_status_result") as lookup_mock:
             lookup_mock.return_value = SimpleNamespace(
@@ -190,6 +343,213 @@ class BehaviorTests(unittest.TestCase):
         self.assertEqual(fake_tool.calls, [{"flight_reference": "AA2797"}])
         self.assertIn("flight_status(AA2797)", result["tool_trace"][0])
         self.assertEqual(result["flight_snapshot"].flight_reference, "AA2797")
+
+    def test_parse_flight_reference_ignores_arriving_in_minutes_phrase(self) -> None:
+        self.assertEqual(parse_flight_reference_from_text("Ray is arriving in 15 minutes."), "")
+
+    def test_parse_flight_reference_keeps_explicit_flight_reference(self) -> None:
+        self.assertEqual(parse_flight_reference_from_text("Ray is arriving on AA2797 tonight."), "AA2797")
+
+    def test_extract_operational_update_skips_arrival_lookup_without_valid_flight_reference(self) -> None:
+        class FakeExtractor:
+            def extract(self, **_kwargs):
+                return OperationalUpdate(
+                    is_guest_related=True,
+                    guest_name_candidates=["Ray"],
+                    event_kind="Arrival Update",
+                    summary="Ray is arriving in 15 minutes.",
+                    details="Front desk should be ready.",
+                    stay_phase="arrival",
+                    flight_reference="",
+                    needs_arrival_lookup=False,
+                )
+
+        nodes = GraphNodes(
+            settings=Settings(),
+            model_with_tools=None,
+            classifier=None,
+            extractor=FakeExtractor(),
+            guest_matcher=None,
+            guest_store=GuestProfileStore(Path("/tmp/unused")),
+            recommender=None,
+            resolver=None,
+            registry=None,
+            compressor=None,
+            harness_prompt="",
+            max_tool_rounds=3,
+            tools_by_name={"flight_status": object(), "weather_lookup": object()},
+        )
+
+        result = nodes.extract_operational_update(
+            {
+                "user_input": "Ray is arriving in 15 minutes.",
+                "event": ChatEvent(
+                    text="Ray is arriving in 15 minutes.",
+                    source="teams",
+                    surface="channel",
+                    is_mentioned=False,
+                    sender_id="u1",
+                    sender_name="Staff",
+                    conversation_id="c1",
+                ),
+                "context_bundle": "",
+                "action": "memorize",
+            }
+        )
+
+        self.assertEqual(result["operational_update"].flight_reference, "")
+        self.assertFalse(result["operational_update"].needs_arrival_lookup)
+
+    def test_weather_enrichment_invokes_weather_lookup_tool(self) -> None:
+        class FakeWeatherTool:
+            def __init__(self):
+                self.calls = []
+
+            def invoke(self, payload):
+                self.calls.append(payload)
+                return "Location: Philadelphia\nCurrent: 18C, clear"
+
+        weather_tool = FakeWeatherTool()
+        nodes = GraphNodes(
+            settings=Settings(weather_forecast_days=3),
+            model_with_tools=None,
+            classifier=None,
+            extractor=None,
+            guest_matcher=None,
+            guest_store=GuestProfileStore(Path("/tmp/unused")),
+            recommender=None,
+            resolver=None,
+            registry=None,
+            compressor=None,
+            harness_prompt="",
+            max_tool_rounds=3,
+            tools_by_name={"flight_status": weather_tool, "weather_lookup": weather_tool},
+        )
+        flight_snapshot = FlightSnapshot(
+            flight_reference="AA2797",
+            departure_airport="Philadelphia International",
+            arrival_airport="San Francisco International",
+        )
+        with patch("src.app.graph.nodes.get_cached_weather_result") as weather_lookup_mock:
+            weather_lookup_mock.side_effect = [
+                SimpleNamespace(
+                    summary=WeatherLocationSummary(
+                        query="Philadelphia International",
+                        resolved_name="Philadelphia International",
+                        current_temperature_c="18",
+                        current_weather="clear",
+                        forecast_summary=["2026-05-16: clear, high 22C, low 14C"],
+                    ),
+                    text="Location: Philadelphia International\nCurrent: 18C, clear",
+                ),
+                SimpleNamespace(
+                    summary=WeatherLocationSummary(
+                        query="San Francisco International",
+                        resolved_name="San Francisco International",
+                        current_temperature_c="14",
+                        current_weather="foggy",
+                        forecast_summary=["2026-05-16: foggy, high 16C, low 11C"],
+                    ),
+                    text="Location: San Francisco International\nCurrent: 14C, foggy",
+                ),
+            ]
+            result = nodes.enrich_weather_context(
+                {
+                    "flight_snapshot": flight_snapshot,
+                    "tool_trace": [],
+                    "enrichment_summary": "Flight info here",
+                }
+            )
+
+        self.assertEqual(
+            weather_tool.calls,
+            [
+                {"location": "Philadelphia International"},
+                {"location": "San Francisco International"},
+            ],
+        )
+        self.assertEqual(result["weather_context"].departure.query, "Philadelphia International")
+        self.assertIn("Departure weather", result["enrichment_summary"])
+
+    def test_recommendation_upgrades_memorize_to_reply_for_key_moment(self) -> None:
+        class FakeRecommender:
+            def recommend(self, **_kwargs):
+                return SimpleNamespace(
+                    should_reply=True,
+                    reason="Arrival is a key service moment.",
+                    reply_text="Ray is arriving tonight. Ask how the weather was in Philadelphia and offer his usual bourbon if available.",
+                )
+
+        nodes = GraphNodes(
+            settings=Settings(),
+            model_with_tools=None,
+            classifier=None,
+            extractor=None,
+            guest_matcher=None,
+            guest_store=GuestProfileStore(Path("/tmp/unused")),
+            recommender=FakeRecommender(),
+            resolver=None,
+            registry=None,
+            compressor=None,
+            harness_prompt="",
+            max_tool_rounds=3,
+            tools_by_name={"flight_status": object(), "weather_lookup": object()},
+        )
+        profile = GuestProfile(
+            guest_id="ray-1",
+            canonical_name="Ray",
+            profile_notes=["Prefers bourbon in the evening."],
+            timeline=[
+                GuestEvent(
+                    timestamp=datetime.now(UTC).isoformat(),
+                    source="teams",
+                    surface="channel",
+                    sender_id="u1",
+                    sender_name="Staff",
+                    conversation_id="c1",
+                    channel_id="ch1",
+                    team_id="t1",
+                    message_id="m1",
+                    event_kind="drink",
+                    summary="Ray ordered bourbon after dinner.",
+                    details="Maker's Mark on the rocks.",
+                    raw_text="Ray ordered bourbon after dinner.",
+                )
+            ],
+        )
+        result = nodes.recommend_guest_moment(
+            {
+                "action": "memorize",
+                "event": ChatEvent(
+                    text="Ray is arriving tonight on AA2797",
+                    source="teams",
+                    surface="channel",
+                    is_mentioned=False,
+                    sender_id="u1",
+                    sender_name="Staff",
+                    conversation_id="c1",
+                ),
+                "context_bundle": "",
+                "operational_update": OperationalUpdate(
+                    is_guest_related=True,
+                    guest_name_candidates=["Ray"],
+                    event_kind="Arrival Update",
+                    summary="Ray is arriving tonight.",
+                    details="Flight AA2797 is on the way.",
+                    stay_phase="arrival",
+                    key_moment_hint="arrival",
+                ),
+                "guest_profile": profile,
+                "weather_context": WeatherContext(
+                    departure=WeatherLocationSummary(query="Philadelphia", resolved_name="Philadelphia", current_temperature_c="18", current_weather="clear"),
+                    arrival=WeatherLocationSummary(query="San Francisco", resolved_name="San Francisco", current_temperature_c="14", current_weather="foggy"),
+                ),
+            }
+        )
+
+        self.assertEqual(result["action"], "reply")
+        self.assertIn("Philadelphia", result["reply_content"])
+        self.assertIn("bourbon", result["reply_content"])
 
     def test_agent_returns_all_actions_from_graph(self) -> None:
         class FakeGraph:

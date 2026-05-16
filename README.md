@@ -1,6 +1,6 @@
 # LangGraph ReAct Chatbot Scaffold
 
-Teams-first Python scaffold for a ReAct-style chatbot built with LangGraph and `langchain-openai`, following Garry Tan's thin harness / fat skills pattern.
+Teams-first Python scaffold for a ReAct-style chatbot built with LangGraph and provider-swappable LangChain chat models, following Garry Tan's thin harness / fat skills pattern.
 
 ## What this scaffold demonstrates
 
@@ -12,6 +12,7 @@ Teams-first Python scaffold for a ReAct-style chatbot built with LangGraph and `
 - Session memory plus compressed summary memory
 - Durable JSONL memory notes for memorized facts
 - Local guest profiles and timelines for hotel operations
+- Weather-aware arrival context and proactive service recommendations
 - A Teams adapter over the same core graph
 - A LangGraph state machine instead of a monolithic chat loop
 
@@ -88,6 +89,7 @@ unless you add anonymization later.
 - `docs_lookup`: search local markdown docs and skill files
 - `web_search`: current public web research through Tavily
 - `flight_status`: live flight arrival/status lookup through Aviationstack
+- `weather_lookup`: current weather plus short forecast through Open-Meteo
 
 ## Default skills
 
@@ -101,16 +103,22 @@ unless you add anonymization later.
 - `flight_arrival_enrichment`
 - `property_activity_logging`
 - `luxury_concierge_research`
+- `travel_weather_context`
+- `arrival_service_recommendations`
+- `departure_service_recommendations`
+- `repeat_pattern_recommendations`
 
 ## Guest operations behavior
 
 - Hotel-team messages about guest arrivals, activities, and preferences are usually memorized silently.
 - Guest timelines and note-heavy profiles are stored locally under `var/guest_profiles/`.
 - The bot uses fuzzy guest matching with recency and current-stay context; if two candidates remain plausible, it asks a follow-up question instead of silently linking the wrong guest.
+- For key moments like arrivals or repeated guest behavior, the bot can proactively reply in the Teams channel with a concise service recommendation grounded in guest memory and travel/weather context.
 
 ## Extending the scaffold
 
 - Add a new markdown skill to `src/app/skills/`
 - Register another thin tool in `src/app/tools/registry.py`
-- Swap models through `OPENAI_MODEL`
+- Switch providers through `MODEL_PROVIDER=openai|anthropic`
+- Pick the matching model through `OPENAI_MODEL` or `ANTHROPIC_MODEL`
 - Add more adapters over the same normalized event/result core

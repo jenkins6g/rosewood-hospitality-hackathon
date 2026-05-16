@@ -11,9 +11,11 @@ class _ExtractedUpdate(BaseModel):
     event_kind: str = Field(default="note")
     summary: str = Field(default="")
     details: str = Field(default="")
+    stay_phase: str = Field(default="")
     flight_reference: str = Field(default="")
     flight_link: str = Field(default="")
     needs_arrival_lookup: bool = Field(default=False)
+    key_moment_hint: str = Field(default="")
 
 
 class OperationalExtractor:
@@ -25,6 +27,9 @@ class OperationalExtractor:
                     "system",
                     "Extract a structured operational update from the message. "
                     "Use active skill context to decide whether the message is about a hotel guest and what should be recorded. "
+                    "Classify the latest guest stay phase as one of: arrival, on_property, departure, unknown. "
+                    "Set key_moment_hint only when the latest update represents a genuine service moment worth recommendation context, "
+                    "such as arrival, departure, or a strong repeat-pattern moment. "
                     "Return concise fields only.",
                 ),
                 (

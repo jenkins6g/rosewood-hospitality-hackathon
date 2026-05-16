@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from src.app.schemas import FlightSnapshot, GuestEvent, GuestProfile
+from src.app.schemas import FlightSnapshot, GuestEvent, GuestProfile, WeatherContext, WeatherLocationSummary
 
 
 def _slugify(value: str) -> str:
@@ -29,6 +29,10 @@ def _status_weight(status: str) -> int:
         "active": 20,
         "departed": 0,
     }.get(status, 5)
+
+
+def _normalized_event_kind(value: str) -> str:
+    return value.strip().lower()
 
 
 def _name_variants(profile: GuestProfile) -> list[str]:
@@ -118,9 +122,15 @@ class GuestProfileStore:
             notes.append(profile_note)
 
         status = profile.status
-        if guest_event.event_kind == "flight":
+        stay_phase = guest_event.stay_phase.strip().lower()
+        event_kind = _normalized_event_kind(guest_event.event_kind)
+        if stay_phase == "departure":
+            status = "active"
+        elif stay_phase == "on_property":
+            status = "on_property"
+        elif stay_phase == "arrival":
             status = "arriving"
-        elif guest_event.event_kind in {"meal", "spa", "conference", "activity"}:
+        elif event_kind in {"meal", "spa", "conference", "activity", "run", "drink"}:
             status = "on_property"
 
         updated = replace(
@@ -143,6 +153,16 @@ class GuestProfileStore:
                     **item,
                     "flight_snapshot": FlightSnapshot(**item["flight_snapshot"])
                     if item.get("flight_snapshot")
+                    else None,
+                    "weather_context": WeatherContext(
+                        departure=WeatherLocationSummary(**item["weather_context"]["departure"])
+                        if item.get("weather_context", {}).get("departure")
+                        else None,
+                        arrival=WeatherLocationSummary(**item["weather_context"]["arrival"])
+                        if item.get("weather_context", {}).get("arrival")
+                        else None,
+                    )
+                    if item.get("weather_context")
                     else None,
                 }
             )

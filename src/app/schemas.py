@@ -58,15 +58,46 @@ class FlightSnapshot:
 
 
 @dataclass(frozen=True)
+class WeatherLocationSummary:
+    query: str
+    resolved_name: str = ""
+    latitude: float = 0.0
+    longitude: float = 0.0
+    current_temperature_c: str = ""
+    current_weather: str = ""
+    forecast_summary: list[str] = field(default_factory=list)
+    source: str = "open-meteo"
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class WeatherContext:
+    departure: WeatherLocationSummary | None = None
+    arrival: WeatherLocationSummary | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        if self.departure is None:
+            payload["departure"] = None
+        if self.arrival is None:
+            payload["arrival"] = None
+        return payload
+
+
+@dataclass(frozen=True)
 class OperationalUpdate:
     is_guest_related: bool = False
     guest_name_candidates: list[str] = field(default_factory=list)
     event_kind: str = "note"
     summary: str = ""
     details: str = ""
+    stay_phase: str = ""
     flight_reference: str = ""
     flight_link: str = ""
     needs_arrival_lookup: bool = False
+    key_moment_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,13 +115,17 @@ class GuestEvent:
     summary: str
     details: str
     raw_text: str
+    stay_phase: str = ""
     confidence_note: str = ""
     flight_snapshot: FlightSnapshot | None = None
+    weather_context: WeatherContext | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         if self.flight_snapshot is None:
             payload["flight_snapshot"] = None
+        if self.weather_context is None:
+            payload["weather_context"] = None
         return payload
 
 
@@ -110,7 +145,6 @@ class GuestProfile:
         if self.latest_flight is None:
             payload["latest_flight"] = None
         return payload
-
 
 @dataclass(frozen=True)
 class GuestMatchDecision:

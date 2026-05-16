@@ -1,5 +1,3 @@
-from langchain_openai import ChatOpenAI
-
 from src.app.classifier import ActionClassifier
 from src.app.config import settings
 from src.app.extractor import OperationalExtractor
@@ -11,11 +9,35 @@ from src.app.memory.compressor import MemoryCompressor
 from src.app.memory.note_store import MemoryNoteStore
 from src.app.memory.session import SessionMemory
 from src.app.prompts import load_prompt
+from src.app.recommender import RecommendationEngine
 from src.app.resolver.router import SkillResolver
 from src.app.schemas import ChatEvent, TurnResult
 from src.app.skills.registry import SkillRegistry
 from src.app.tracing import build_runnable_config
 from src.app.tools.registry import build_toolset
+
+
+def build_chat_model(active_settings):
+    if active_settings.model_provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=active_settings.model_name,
+            temperature=active_settings.temperature,
+        )
+
+    if active_settings.model_provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=active_settings.model_name,
+            temperature=active_settings.temperature,
+        )
+
+    raise ValueError(
+        f"Unsupported MODEL_PROVIDER: {active_settings.model_provider}. "
+        "Expected one of: openai, anthropic."
+    )
 
 
 class ReactSkillAgent:
@@ -34,15 +56,13 @@ class ReactSkillAgent:
         registry = SkillRegistry(settings.skill_dir)
         tools, _ = build_toolset(settings, settings.skill_dir)
 
-        model = ChatOpenAI(
-            model=settings.model_name,
-            temperature=settings.temperature,
-        )
+        model = build_chat_model(settings)
 
         harness_prompt = load_prompt(settings.prompt_dir / "harness.md")
         resolver_prompt = load_prompt(settings.prompt_dir / "resolver.md")
         summarizer_prompt = load_prompt(settings.prompt_dir / "summarizer.md")
         classifier_prompt = load_prompt(settings.prompt_dir / "classifier.md")
+        recommendation_prompt = load_prompt(settings.prompt_dir / "recommendation.md")
 
         resolver = SkillResolver(
             model=model,
@@ -55,6 +75,10 @@ class ReactSkillAgent:
         )
         extractor = OperationalExtractor(model=model)
         guest_matcher = GuestMatcher(model=model, store=self.guest_store)
+        recommender = RecommendationEngine(
+            model=model,
+            recommendation_prompt=recommendation_prompt,
+        )
         compressor = MemoryCompressor(
             model=model,
             summarizer_prompt=summarizer_prompt,
@@ -68,6 +92,7 @@ class ReactSkillAgent:
             extractor=extractor,
             guest_matcher=guest_matcher,
             guest_store=self.guest_store,
+            recommender=recommender,
             resolver=resolver,
             registry=registry,
             compressor=compressor,

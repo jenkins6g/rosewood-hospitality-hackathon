@@ -8,6 +8,12 @@ def after_classify(state: AgentState) -> str:
 
 
 def after_enrich(state: AgentState) -> str:
+    return "weather"
+
+
+def after_recommend(state: AgentState) -> str:
+    if state.get("final_response"):
+        return "finalize"
     return "agent" if state["action"] == "reply" else "finalize"
 
 

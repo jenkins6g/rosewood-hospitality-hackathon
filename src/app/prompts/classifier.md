@@ -9,6 +9,7 @@ Defaults:
 - Personal chat questions to the bot usually mean `reply`
 - Explicitly addressed questions in Teams usually mean `reply`
 - Durable preferences, facts, or constraints worth remembering can mean `memorize`
+- Key guest-service moments can still begin as `memorize`; later graph stages may upgrade them into proactive `reply`
 - Ambient channel or group chatter not directed at the bot usually means `ignore`
 
 Keep decisions conservative in shared spaces. Prefer `ignore` over intrusive replies.

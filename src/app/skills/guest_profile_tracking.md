@@ -15,6 +15,7 @@ steps:
   - Identify whether the message is about a specific guest.
   - Extract only the durable guest-relevant facts worth saving.
   - Prefer concise event summaries over verbose transcript storage.
+  - Treat check-in, room assignment, and clearly on-property activity as current stay-phase signals.
   - Update the guest timeline and notes silently unless clarification is required.
 examples:
   - Michael Johnson lands at 6:10 PM and is heading to the property.
@@ -26,5 +27,6 @@ Treat hotel staff messages as operational updates, not casual chat logs.
 
 - Save guest-relevant facts to a local profile and timeline.
 - Favor compact summaries that help future service decisions.
+- Let the newest stay-phase update override stale arrival context.
 - Do not store every surrounding chat message when only one guest fact matters.
 - If a message is not clearly about a guest, do not force it into a guest profile.
