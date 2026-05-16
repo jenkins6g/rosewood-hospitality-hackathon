@@ -1,12 +1,18 @@
 [project]
-name = "hospitality-hackathon-teams-bot"
+name = "langgraph-react-skill-chatbot"
 version = "0.1.0"
-description = "A minimal Microsoft Teams echo bot in Python"
+description = "A thin-harness, fat-skills ReAct chatbot scaffold built with LangGraph"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "dotenv>=0.9.9",
+  "langchain>=0.3.0",
+  "langchain-openai>=0.3.0",
+  "langgraph>=0.2.0",
+  "langsmith>=0.3.18",
   "microsoft-teams-apps",
+  "pydantic>=2.0.0",
+  "pyyaml>=6.0.0",
 ]
 
 [dependency-groups]
@@ -15,7 +21,8 @@ dev = [
 ]
 
 [project.scripts]
-start = "src.main:main"
+start = "src.teams_main:main"
+chat-cli = "src.main:main"
 typecheck = "pyright.cli:entrypoint"
 
 [build-system]

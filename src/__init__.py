@@ -1,1 +1,1 @@
-
+"""Project package root."""
